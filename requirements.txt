@@ -1,0 +1,10 @@
+torch==2.5.1+cu118
+lightning==2.4.0
+numpy==2.1.2
+pandas==2.2.3
+tqdm==4.67.1
+pyyaml
+causal-conv1d==1.5.0.post8
+mamba-ssm==2.2.4
+orjson
+rotary-embedding-torch
