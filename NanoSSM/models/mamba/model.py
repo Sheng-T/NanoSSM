@@ -289,7 +289,18 @@ class MambaModel(pl.LightningModule):
 
             read_probs = torch.sigmoid(site_reads_logit)
 
-            site_features_interacted = self.site_interaction(site_features.unsqueeze(0))
+            # site_features_interacted = self.site_interaction(site_features.unsqueeze(0))
+
+            if n_reads > 512:
+                self.site_interaction.cpu()
+                site_features_interacted = self.site_interaction(
+                    site_features.unsqueeze(0).cpu().float()
+                ).to(self.device)
+                self.site_interaction.to(self.device)
+            else:
+                site_features_interacted = self.site_interaction(
+                    site_features.unsqueeze(0)
+                )
 
             site_features = site_features_interacted.squeeze(0)
 
@@ -311,9 +322,11 @@ class MambaModel(pl.LightningModule):
                 if n_reads > 1
                 else torch.tensor([0.0], device=self.device)
             )
-            q25, q50, q75 = torch.quantile(
-                logit_f, torch.tensor([0.25, 0.5, 0.75], device=self.device)
-            )
+            # q25, q50, q75 = torch.quantile(
+            #     logit_f, torch.tensor([0.25, 0.5, 0.75], device=self.device)
+            # )
+            q25, q50, q75 = torch.quantile(site_reads_logit.float().cpu(), torch.tensor([0.25, 0.5, 0.75])).to(self.device)
+
             log_n_reads = torch.log10(
                 torch.tensor([float(n_reads)], device=self.device)
             )

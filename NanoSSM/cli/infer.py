@@ -71,6 +71,8 @@ def argparser():
         default=DEFAULT_NORM_PATH,
         help="path to normalization statistics directory",
     )
+    parser.add_argument("--max_reads", default=1024, type=int, help="max reads per site during inference")
+
     return parser
 
 def get_output_file(output_dir, output_type, overwrite=False, filename=""):
@@ -137,6 +139,7 @@ def main(args):
             args.batch_size,
             args.num_workers,
             norm_path=args.norm_path,
+            max_reads=args.max_reads
         )
 
         with ExitStack() as manager:
@@ -195,9 +198,19 @@ def main(args):
 
                     read_probs = torch.sigmoid(site_reads_logit)
 
-                    site_features_interacted = net.site_interaction(
-                        site_features.unsqueeze(0)
-                    )
+                    # site_features_interacted = net.site_interaction(
+                    #     site_features.unsqueeze(0)
+                    # )
+                    if n_reads > 512:
+                        net.site_interaction.cpu()
+                        site_features_interacted = net.site_interaction(
+                            site_features.unsqueeze(0).cpu().float()
+                        ).to(device)
+                        net.site_interaction.to(device)
+                    else:
+                        site_features_interacted = net.site_interaction(
+                            site_features.unsqueeze(0)
+                        )
                     site_features = site_features_interacted.squeeze(0)
 
                     p_feat = net.prob_projection(site_reads_logit.unsqueeze(-1))
@@ -215,10 +228,12 @@ def main(args):
                         if n_reads > 1
                         else torch.tensor([0.0], device=device)
                     )
-                    q25, q50, q75 = torch.quantile(
-                        site_reads_logit,
-                        torch.tensor([0.25, 0.5, 0.75], device=device),
-                    )
+                    # q25, q50, q75 = torch.quantile(
+                    #     site_reads_logit,
+                    #     torch.tensor([0.25, 0.5, 0.75], device=device),
+                    # )
+                    q25, q50, q75 = torch.quantile(site_reads_logit.float().cpu(),torch.tensor([0.25, 0.5, 0.75])).to(device)
+
                     log_n_reads = torch.log10(
                         torch.tensor([float(n_reads)], device=device)
                     )

@@ -32,7 +32,7 @@ def safe_collate(batch):
     batch = [item for item in batch if item is not None]
     return batch if batch else None
 
-def get_test_loader(data_dirs, batch_size=1, num_workers=4, norm_path=None):
+def get_test_loader(data_dirs, batch_size=1, num_workers=4, norm_path=None, max_read=512):
     if isinstance(data_dirs, str):
         paths = [p.strip() for p in data_dirs.split(",")]
     elif isinstance(data_dirs, list):
@@ -61,6 +61,7 @@ def get_test_loader(data_dirs, batch_size=1, num_workers=4, norm_path=None):
         json_paths=json_paths,
         split="test",
         norm_path=norm_path,
+        infer_max_reads=max_read
     )
 
     return DataLoader(
@@ -81,6 +82,7 @@ def get_site_dataloader(
     num_workers: int,
     pin_memory: bool = True,
     norm_path: str = None,
+    max_reads: int=1024
 ) -> DataLoader:
     dataset = JsonIndexedDataset(
         info_path, json_paths=data_path, split="infer", norm_path=norm_path
@@ -95,6 +97,7 @@ def get_site_dataloader(
         persistent_workers=num_workers > 0,
         prefetch_factor=4 if num_workers > 0 else 2,
         collate_fn=safe_collate,
+        infer_max_reads=max_reads
     )
 
     return dataloader
@@ -109,6 +112,9 @@ class JsonIndexedDataset(Dataset):
         use_signal=False,
         do_norm=True,
         dorpout=False,
+        infer_max_reads=1024,
+        train_max_reads=256,
+        use_max=True
     ):
         self.info_paths = [info_paths] if isinstance(info_paths, str) else info_paths
         self.json_paths = [json_paths] if isinstance(json_paths, str) else json_paths
@@ -121,13 +127,15 @@ class JsonIndexedDataset(Dataset):
             temp_df["file_idx"] = i
             df_list.append(temp_df)
 
-        self.use_max = True
+        self.use_max = use_max
 
         self.info_df = pd.concat(df_list, ignore_index=True)
         self.split = split
         self.use_signal = use_signal
         self.do_norm = do_norm
         self.dorpout = dorpout
+        self.train_max_reads = train_max_reads
+        self.infer_max_reads = infer_max_reads
 
         self.file_handlers = {}
 
@@ -371,8 +379,9 @@ class JsonIndexedDataset(Dataset):
             if signal.dim() > 1:
                 signal = signal[indices]
 
+        orig_n = n
         if self.use_max:
-            MAX_READS = 256
+            MAX_READS = self.train_max_reads if self.split == 'train' else self.infer_max_reads
             if n > MAX_READS:
                 indices = torch.randperm(n)[:MAX_READS]
                 stat = stat[indices]
@@ -390,7 +399,7 @@ class JsonIndexedDataset(Dataset):
             res["info"] = {
                 "transcript_id": row["transcript_id"],
                 "position": str(row["transcript_position"]),
-                "num": n,
+                "num": orig_n,
                 "motif": row["motif"],
             }
 

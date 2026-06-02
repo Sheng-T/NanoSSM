@@ -44,6 +44,8 @@ def argparser():
     )
 
     parser.add_argument("--type", default="site", help="read | site")
+    parser.add_argument("--max_read", default=512, type=int, help="max reads per site during inference")
+
 
     return parser
 
@@ -65,7 +67,7 @@ def main(args):
         trainer.test(
             model,
             dataloaders=site_get_test_loader(
-                args.test_file, args.batch_size, args.num_workers
+                args.test_file, args.batch_size, args.num_workers, max_read=args.max_read
             ),
             ckpt_path=args.model,
         )

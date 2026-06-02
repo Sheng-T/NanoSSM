@@ -11,7 +11,7 @@ def safe_collate(batch):
     return batch if batch else None
 
 class MultiDataModule(pl.LightningDataModule):
-    def __init__(self, data_paths, batch_size=1, num_workers=4, norm_path=None):
+    def __init__(self, data_paths, batch_size=1, num_workers=4, norm_path=None, train_max_reads=256, infer_max_reads=512):
         super().__init__()
 
         if isinstance(data_paths, str):
@@ -60,6 +60,7 @@ class MultiDataModule(pl.LightningDataModule):
                 json_paths=train_json_list,
                 split="train",
                 norm_path=self.norm_path,
+                train_max_reads=self.train_max_reads
             )
         else:
             raise ValueError("[Error] No train_info files found!")
@@ -70,6 +71,7 @@ class MultiDataModule(pl.LightningDataModule):
                 json_paths=val_json_list,
                 split="val",
                 norm_path=self.norm_path,
+                infer_max_reads=self.infer_max_reads
             )
         else:
             self.val_ds = None

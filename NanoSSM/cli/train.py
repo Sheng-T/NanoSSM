@@ -99,6 +99,8 @@ def argparser():
         default=False,
         help="resume full training state from checkpoint",
     )
+    parser.add_argument("--train_max_reads", default=256, type=int, help="max reads per site during training")
+    parser.add_argument("--infer_max_reads", default=512, type=int, help="max reads per site during inference")
 
     return parser
 
@@ -145,7 +147,7 @@ def main(args):
 
         paths = [p.strip() for p in args.path.split(",")]
         datamodule = site_DataModule(
-            paths, args.batch_size, args.num_workers, args.norm_path
+            paths, args.batch_size, args.num_workers, args.norm_path, train_max_reads=args.train_max_reads, infer_max_reads=args.infer_max_reads
         )
 
         ckpt_path = None
@@ -167,7 +169,7 @@ def main(args):
         trainer.test(
             model,
             dataloaders=site_get_test_loader(
-                paths, args.batch_size, args.num_workers, norm_path=args.norm_path
+                paths, args.batch_size, args.num_workers, norm_path=args.norm_path, max_read=args.infer_max_reads
             ),
             verbose=True,
             ckpt_path="best",
