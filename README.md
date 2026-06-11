@@ -17,7 +17,7 @@ NanoSSM uses a Mamba2-based encoder for efficient read-level feature extraction 
 **Requirements**: Python 3.10, CUDA 11.8, [f5c](https://github.com/hasindu2008/f5c)
 
 ```bash
-git clone https://github.com/your-org/NanoSSM.git
+git clone https://github.com/Sheng-T/NanoSSM.git
 cd NanoSSM
 ```
 
