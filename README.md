@@ -47,6 +47,24 @@ export PYTHONPATH=/path/to/NanoSSM:$PYTHONPATH
 
 ---
 
+## Quick Start
+
+A small demo dataset is provided in `demo/` to verify the installation. Run:
+
+```bash
+python NanoSSM/cli/infer.py \
+    --data_path  demo/data.json \
+    --info_path  demo/data.info \
+    --output_dir demo/result \
+    --overwrite
+```
+
+`--model` and `--norm_path` default to `models/model.ckpt` and `models/norm` respectively, so they can be omitted when running from the project root.
+
+Results will be written to `demo/result/infer_site_prob.bed`.
+
+---
+
 ## Usage
 
 ```
