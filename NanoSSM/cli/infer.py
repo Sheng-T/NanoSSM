@@ -47,7 +47,7 @@ def argparser():
         help="path to pretrain model",
         default=DEFAULT_MODEL_PATH,
     )
-    parser.add_argument("--batch_size", default=64, help="batch size", type=int)
+    parser.add_argument("--batch_size", default=32, help="batch size", type=int)
     parser.add_argument("--seed", default=47, type=int)
     parser.add_argument("--motif", type=str, default="m6A")
     parser.add_argument(

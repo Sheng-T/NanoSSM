@@ -127,11 +127,14 @@ python NanoSSM/cli/infer.py \
     --norm_path  models/norm \
     --output_dir ./result \
     --device     0 \
+    --batch_size 32 \
     --num_workers 8 \
     --overwrite
 ```
 
-Results are written to `result/infer_site_prob.bed` in bedMethyl-compatible format:
+- For improved stability across different GPUs and datasets, consider using a smaller --batch_size if CUDA-related errors are encountered during inference.
+
+- Results are written to `result/infer_site_prob.bed` in bedMethyl-compatible format:
 
 ```
 chrom  start  end  motif  score  strand  start  end  color  N_valid_cov  percent_modified
