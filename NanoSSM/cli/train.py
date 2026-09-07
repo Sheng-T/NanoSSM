@@ -32,6 +32,7 @@ from NanoSSM.data.site_level.load_data import get_test_loader as site_get_test_l
 from NanoSSM.models.mamba.model import MambaModel
 from NanoSSM.tools.common.common_utils import common_log
 
+
 def argparser():
     parser = ArgumentParser(
         formatter_class=ArgumentDefaultsHelpFormatter, add_help=True
@@ -102,7 +103,15 @@ def argparser():
     parser.add_argument("--train_max_reads", default=256, type=int, help="max reads per site during training")
     parser.add_argument("--infer_max_reads", default=512, type=int, help="max reads per site during inference")
 
+    parser.add_argument(
+        "--read_loss_weight",
+        default=0.0,
+        type=float,
+        help="weight of exact ATP/m6A read-level BCE on synthetic IVT reads only",
+    )
+
     return parser
+
 
 def main(args):
     start_time = time.time()
@@ -143,6 +152,7 @@ def main(args):
             type=args.type,
             is_finetune=True if args.model else False,
             test_save_path=args.save_dir,
+            read_loss_weight=args.read_loss_weight,
         )
 
         paths = [p.strip() for p in args.path.split(",")]
@@ -182,6 +192,7 @@ def main(args):
     finally:
         common_log(f"=======================================================\n")
         common_log(f"> Elapsed time: {time.time() - start_time:.2f} seconds\n")
+
 
 if __name__ == "__main__":
     main(argparser().parse_args())

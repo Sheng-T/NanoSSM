@@ -39,11 +39,13 @@ def set_model_checkpoint_callback(save_dir, save_every_epoch, type="site", patie
 
     if type == "site":
         checkpoint_callback = ModelCheckpoint(
-            monitor="val_pearson",
+            # monitor="val_pearson",
+            monitor="val_mae",
             filename="{step}-{val_pearson:.4f}-{val_mse:.4f}-{val_mae:.4f}",
             save_top_k=3,
             dirpath=save_dir,
-            mode="max",
+            # mode="max",
+            mode="min",
             save_last=True,
             every_n_epochs=save_every_epoch,
         )

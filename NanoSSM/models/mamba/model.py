@@ -70,6 +70,9 @@ class MambaModel(pl.LightningModule):
         freeze_epochs: int = 3,
         test_save_path: str = None,
         feature_dim: int = 5,
+        delta_scale: float = 0.5,
+        delta_l2_weight: float = 0.01,
+        read_loss_weight: float = 0.0,
     ):
         super().__init__()
 
@@ -79,6 +82,11 @@ class MambaModel(pl.LightningModule):
         self.is_finetune = is_finetune
         self.freeze_epochs = freeze_epochs
         self.test_save_path = test_save_path if test_save_path is not None else "./"
+
+        self.delta_scale = float(delta_scale)
+        self.delta_l2_weight = float(delta_l2_weight)
+
+        self.read_loss_weight = float(read_loss_weight)
 
         self.loss = nn.BCEWithLogitsLoss()
         self.loss_fn = nn.SmoothL1Loss(beta=0.05, reduction="none")
@@ -174,7 +182,7 @@ class MambaModel(pl.LightningModule):
 
     def configure_optimizers(self):
 
-        optimizer = torch.optim.AdamW(self.parameters(), weight_decay=self.wd)
+        optimizer = torch.optim.AdamW(self.parameters(), weight_decay=self.wd, lr=self.lr)
 
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
@@ -255,9 +263,15 @@ class MambaModel(pl.LightningModule):
             return torch.tensor(0.0, device=self.device)
 
         batch_size = len(batch)
-        site_preds_reg = []
 
+        site_preds_reg = []
+        site_base_ratios = []
+        site_delta_logits = []
         ratios = []
+
+
+        ivt_read_logits = []
+        ivt_read_labels = []
 
         all_seqs = torch.cat([b["seq"] for b in batch], dim=0)
         all_signals = (
@@ -273,23 +287,44 @@ class MambaModel(pl.LightningModule):
 
         offset = 0
         read_counts = []
+
         for site_data in batch:
-            n_reads = site_data["seq"].shape[0]
+            n_reads = int(site_data["seq"].shape[0])
             site_reads_logit = preds[offset : offset + n_reads]
             site_features = final_alignment_features[offset : offset + n_reads]
             offset += n_reads
             read_counts.append(n_reads)
-            if mode == "train":
 
+            if (
+                mode == "train"
+                and self.read_loss_weight > 0.0
+                and "read_label" in site_data
+            ):
+                read_label = (
+                    site_data["read_label"]
+                    .to(self.device)
+                    .float()
+                    .view(-1)
+                )
+
+                if read_label.numel() != n_reads:
+                    raise ValueError(
+                        "read_label/read mismatch: "
+                        f"{read_label.numel()} labels vs {n_reads} reads"
+                    )
+
+                ivt_read_logits.append(site_reads_logit.float().view(-1))
+                ivt_read_labels.append(read_label)
+
+
+            if mode == "train":
                 perm = torch.randperm(n_reads, device=self.device)
                 site_features = site_features[perm]
                 site_reads_logit = site_reads_logit[perm]
 
             ratio = site_data["ratio"].to(self.device).view(-1).clone()
-
             read_probs = torch.sigmoid(site_reads_logit)
 
-            # site_features_interacted = self.site_interaction(site_features.unsqueeze(0))
 
             if n_reads > 512:
                 self.site_interaction.cpu()
@@ -304,15 +339,20 @@ class MambaModel(pl.LightningModule):
 
             site_features = site_features_interacted.squeeze(0)
 
+            # Gated aggregation: learn how much each read should contribute to
+            # the site-level base ratio.
             p_feat = self.prob_projection(site_reads_logit.unsqueeze(-1))
-
             f_norm = torch.norm(site_features, dim=-1, keepdim=True)
             n_feat = self.norm_projection(f_norm)
 
-            feat_for_agg = torch.cat([site_features, p_feat, n_feat], dim=-1)
+            feat_for_agg = torch.cat(
+                [site_features, p_feat, n_feat],
+                dim=-1,
+            )
 
             aggregated_feature, weights = self.aggregator(
-                feat_for_agg, return_weights=True
+                feat_for_agg,
+                return_weights=True,
             )
 
             logit_f = site_reads_logit.float()
@@ -322,14 +362,16 @@ class MambaModel(pl.LightningModule):
                 if n_reads > 1
                 else torch.tensor([0.0], device=self.device)
             )
-            # q25, q50, q75 = torch.quantile(
-            #     logit_f, torch.tensor([0.25, 0.5, 0.75], device=self.device)
-            # )
-            q25, q50, q75 = torch.quantile(site_reads_logit.float().cpu(), torch.tensor([0.25, 0.5, 0.75])).to(self.device)
+
+            q25, q50, q75 = torch.quantile(
+                logit_f.cpu(),
+                torch.tensor([0.25, 0.5, 0.75]),
+            ).to(self.device)
 
             log_n_reads = torch.log10(
                 torch.tensor([float(n_reads)], device=self.device)
             )
+
             stat_features = torch.cat(
                 [
                     mean_val,
@@ -339,61 +381,188 @@ class MambaModel(pl.LightningModule):
                     q75.unsqueeze(0),
                     log_n_reads,
                 ]
+            ).unsqueeze(0)
+
+            combined_feat = torch.cat(
+                [aggregated_feature, stat_features],
+                dim=-1,
             )
-            stat_features = stat_features.unsqueeze(0)
 
-            combined_feat = torch.cat([aggregated_feature, stat_features], dim=-1)
-
-            delta_logit = self.final_site_predictor(combined_feat).view(-1).clamp(-5, 5)
+            raw_delta = self.final_site_predictor(combined_feat).view(-1)
+            delta_logit = self.delta_scale * torch.tanh(raw_delta)
 
             weighted_base_ratio = torch.sum(weights * read_probs)
+            base_ratio = weighted_base_ratio.clamp(1e-5, 1.0 - 1e-5)
 
-            base_ratio = weighted_base_ratio.clamp(1e-5, 1 - 1e-5)
-
-            base_logit = torch.logit(base_ratio.clamp(1e-5, 1 - 1e-5))
+            base_logit = torch.logit(base_ratio)
             final_pred_reg = torch.sigmoid(base_logit + delta_logit)
 
-            site_preds_reg.append(final_pred_reg)
+            site_base_ratios.append(base_ratio.view(-1))
+            site_delta_logits.append(delta_logit.view(-1))
+            site_preds_reg.append(final_pred_reg.view(-1))
             ratios.append(ratio)
 
         all_preds = torch.cat(site_preds_reg)
+        all_base_ratios = torch.cat(site_base_ratios)
+        all_delta_logits = torch.cat(site_delta_logits)
         all_ratios = torch.cat(ratios)
 
         read_counts_tensor = torch.tensor(
-            read_counts, device=self.device, dtype=torch.float
+            read_counts,
+            device=self.device,
+            dtype=torch.float,
         )
+
         coverage_weights = torch.log1p(read_counts_tensor)
-
         coverage_weights = coverage_weights.clamp(
-            max=coverage_weights.quantile(0.9).item()
+            max=coverage_weights.quantile(0.9).detach()
         )
-
-        final_weights = coverage_weights
 
         loss_dist = self.loss_fn(all_preds, all_ratios)
-        weighted_mse_loss = (loss_dist * final_weights).sum() / (
-            final_weights.sum() + 1e-8
-        )
+        weighted_ratio_loss = (
+            loss_dist * coverage_weights
+        ).sum() / (coverage_weights.sum() + 1e-8)
 
         p_loss = pearson_loss(all_preds, all_ratios)
 
-        total_loss = weighted_mse_loss + 0.3 * p_loss
+        delta_penalty = all_delta_logits.pow(2).mean()
 
-        ratios = torch.stack(ratios)
-        site_preds_reg = torch.stack(site_preds_reg)
+        site_loss = (
+            weighted_ratio_loss
+            + 0.3 * p_loss
+            + self.delta_l2_weight * delta_penalty
+        )
+
+        read_loss = torch.tensor(0.0, device=self.device)
+        all_ivt_read_logits = None
+        all_ivt_read_labels = None
+
+        if (
+            mode == "train"
+            and self.read_loss_weight > 0.0
+            and len(ivt_read_logits) > 0
+        ):
+            all_ivt_read_logits = torch.cat(ivt_read_logits)
+            all_ivt_read_labels = torch.cat(ivt_read_labels)
+
+            read_loss = F.binary_cross_entropy_with_logits(
+                all_ivt_read_logits,
+                all_ivt_read_labels,
+            )
+
+            total_loss = site_loss + self.read_loss_weight * read_loss
+        else:
+            total_loss = site_loss
+
+        site_preds_metric = all_preds
+        ratios_metric = all_ratios
+
+        log_kwargs = dict(
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
+
+        # Diagnostics used in the structure ablation and useful for the final
+        # model as well.
+        self.log(
+            f"{mode}_base_mae",
+            F.l1_loss(all_base_ratios, all_ratios),
+            **log_kwargs,
+        )
+        self.log(
+            f"{mode}_delta_abs",
+            all_delta_logits.abs().mean(),
+            **log_kwargs,
+        )
+        self.log(
+            f"{mode}_delta_penalty",
+            delta_penalty,
+            **log_kwargs,
+        )
 
         if mode == "train":
-            self.train_mse.update(site_preds_reg, ratios)
-            self.train_mae.update(site_preds_reg, ratios)
-            self.train_pearson.update(site_preds_reg, ratios)
-            self.train_smape.update(site_preds_reg, ratios)
+            # Diagnostics for the auxiliary read-level objective.  These are
+            # emitted only when labeled synthetic IVT reads are present.
+            if all_ivt_read_logits is not None:
+                with torch.no_grad():
+                    aux_read_probs = torch.sigmoid(all_ivt_read_logits)
+                    aux_read_acc = (
+                        (aux_read_probs >= 0.5).float()
+                        == all_ivt_read_labels
+                    ).float().mean()
+                    aux_read_pos_frac = all_ivt_read_labels.mean()
+                    aux_read_prob_mean = aux_read_probs.mean()
+
+                self.log(
+                    "train_site_loss_auxrun",
+                    site_loss,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+                self.log(
+                    "train_read_loss",
+                    read_loss,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+                self.log(
+                    "train_read_weighted_loss",
+                    self.read_loss_weight * read_loss,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+                self.log(
+                    "train_read_acc",
+                    aux_read_acc,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+                self.log(
+                    "train_read_pos_frac",
+                    aux_read_pos_frac,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+                self.log(
+                    "train_read_prob_mean",
+                    aux_read_prob_mean,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=batch_size,
+                )
+
+            self.train_mse.update(site_preds_metric, ratios_metric)
+            self.train_mae.update(site_preds_metric, ratios_metric)
+            self.train_pearson.update(site_preds_metric, ratios_metric)
+            self.train_smape.update(site_preds_metric, ratios_metric)
+
             if self.global_step > 0 and self.global_step % 100 == 0:
                 self.log(
-                    "train_mse", self.train_mse.compute(), on_step=True, prog_bar=True
+                    "train_mse",
+                    self.train_mse.compute(),
+                    on_step=True,
+                    prog_bar=True,
                 )
                 self.log(
-                    "train_mae", self.train_mae.compute(), on_step=True, prog_bar=False
+                    "train_mae",
+                    self.train_mae.compute(),
+                    on_step=True,
+                    prog_bar=False,
                 )
+
             self.log(
                 "total_loss",
                 total_loss,
@@ -404,10 +573,11 @@ class MambaModel(pl.LightningModule):
             )
 
         elif mode == "val":
-            self.val_mse.update(site_preds_reg, ratios)
-            self.val_mae.update(site_preds_reg, ratios)
-            self.val_pearson.update(site_preds_reg, ratios)
-            self.val_smape.update(site_preds_reg, ratios)
+            self.val_mse.update(site_preds_metric, ratios_metric)
+            self.val_mae.update(site_preds_metric, ratios_metric)
+            self.val_pearson.update(site_preds_metric, ratios_metric)
+            self.val_smape.update(site_preds_metric, ratios_metric)
+
             self.log(
                 "val_loss",
                 total_loss,
@@ -419,24 +589,23 @@ class MambaModel(pl.LightningModule):
             )
 
         elif mode == "test":
-
             for i, site_data in enumerate(batch):
-
                 info = site_data.get("info", {})
-
                 self.test_step_outputs.append(
                     {
                         "chrom": info.get("transcript_id", "unknown"),
                         "start_position": info.get("position", -1),
-                        "true_ratio": ratios[i].item(),
-                        "percent_modified": site_preds_reg[i].item(),
+                        "true_ratio": all_ratios[i].item(),
+                        "base_ratio": all_base_ratios[i].item(),
+                        "delta_logit": all_delta_logits[i].item(),
+                        "percent_modified": all_preds[i].item(),
                     }
                 )
 
-            self.test_mse.update(site_preds_reg, ratios)
-            self.test_mae.update(site_preds_reg, ratios)
-            self.test_pearson.update(site_preds_reg, ratios)
-            self.test_smape.update(site_preds_reg, ratios)
+            self.test_mse.update(site_preds_metric, ratios_metric)
+            self.test_mae.update(site_preds_metric, ratios_metric)
+            self.test_pearson.update(site_preds_metric, ratios_metric)
+            self.test_smape.update(site_preds_metric, ratios_metric)
 
             self.log(
                 "test_loss",
@@ -447,6 +616,8 @@ class MambaModel(pl.LightningModule):
                 prog_bar=True,
                 batch_size=batch_size,
             )
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
         return total_loss
 
@@ -615,7 +786,7 @@ class MambaModel(pl.LightningModule):
             return self.site_shared_step(batch, batch_idx, mode="test")
         return self.read_shared_step(batch, batch_idx, mode="test")
 
-    def on_training_epoch_end(self, outputs):
+    def on_training_epoch_end(self):
 
         if self.type == "site":
             self.log(

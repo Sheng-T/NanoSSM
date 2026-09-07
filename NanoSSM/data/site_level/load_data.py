@@ -44,12 +44,44 @@ def get_test_loader(data_dirs, batch_size=1, num_workers=4, norm_path=None, max_
     json_paths = []
 
     for p in paths:
-        t_info = os.path.join(p, "test_GNS_motif_1.0.info")
-        j_file = os.path.join(p, "data.json")
+        p = p.strip()
 
-        if os.path.exists(t_info) and os.path.exists(j_file):
-            test_info_paths.append(t_info)
-            json_paths.append(j_file)
+        # New layout
+        new_info_labeled = os.path.join(
+            p, "test", "data.labeled.info"
+        )
+        new_info = os.path.join(
+            p, "test", "data.info"
+        )
+        new_json = os.path.join(
+            p, "test", "data.json"
+        )
+
+        # Legacy layout
+        old_info = os.path.join(
+            p, "test_GNS_motif_1.0.info"
+        )
+        old_json = os.path.join(
+            p, "data.json"
+        )
+
+        if os.path.exists(new_json):
+            if os.path.exists(new_info_labeled):
+                t_info = new_info_labeled
+            elif os.path.exists(new_info):
+                t_info = new_info
+            else:
+                t_info = None
+
+            if t_info is not None:
+                test_info_paths.append(t_info)
+                json_paths.append(new_json)
+                print(f"[INFO] New-layout test: {t_info}")
+
+        elif os.path.exists(old_info) and os.path.exists(old_json):
+            test_info_paths.append(old_info)
+            json_paths.append(old_json)
+            print(f"[INFO] Legacy test: {old_info}")
 
     if not test_info_paths:
         raise ValueError("[Error] No test_info files found!")
@@ -71,7 +103,7 @@ def get_test_loader(data_dirs, batch_size=1, num_workers=4, norm_path=None, max_
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else 2,
+        prefetch_factor=4 if num_workers > 0 else None,
         collate_fn=safe_collate,
     )
 
@@ -336,11 +368,45 @@ class JsonIndexedDataset(Dataset):
         f.seek(int(row["start"]))
         obj = orjson.loads(f.read(int(row["end"]) - int(row["start"])))
 
-        data = obj[row["transcript_id"]][str(row["transcript_position"])][row["motif"]]
+        site_obj = obj[row["transcript_id"]][str(row["transcript_position"])]
+        data = site_obj[row["motif"]]
 
         stat = torch.from_numpy(np.array(data["stat"], dtype=np.float32))
         seq = torch.from_numpy(np.array(data["seq"], dtype=np.int64))
         n, w, _ = stat.shape
+
+
+        read_labels = None
+
+
+        read_ids = site_obj.get("read_id", data.get("read_id", None))
+
+        if read_ids is not None and len(read_ids) == n:
+            labels = []
+            all_have_exact_origin = True
+
+            for rid in read_ids:
+                rid = str(rid)
+                if rid.startswith("ATP:"):
+                    labels.append(0.0)
+                elif rid.startswith("m6A:"):
+                    labels.append(1.0)
+                else:
+                    all_have_exact_origin = False
+                    break
+
+            if all_have_exact_origin:
+                read_labels = torch.tensor(labels, dtype=torch.float32)
+
+        if self.split in ("infer", "test"):
+            read_ids = [str(x) for x in site_obj.get("read_id", [])]
+
+            if len(read_ids) != n:
+                raise RuntimeError(
+                    f"read_id count mismatch at "
+                    f"{row['transcript_id']}:{row['transcript_position']}: "
+                    f"read_id={len(read_ids)}, seq={n}"
+                )
 
         stat[:, :, 0] = torch.log1p(torch.clamp(stat[:, :, 0], min=0))
 
@@ -378,6 +444,8 @@ class JsonIndexedDataset(Dataset):
             seq = seq[indices]
             if signal.dim() > 1:
                 signal = signal[indices]
+            if read_labels is not None:
+                read_labels = read_labels[indices]
 
         orig_n = n
         if self.use_max:
@@ -388,9 +456,19 @@ class JsonIndexedDataset(Dataset):
                 seq = seq[indices]
                 if signal.dim() > 1:
                     signal = signal[indices]
+                if read_labels is not None:
+                    read_labels = read_labels[indices]
+                if read_ids is not None:
+                    idx_list = indices.tolist()
+                    read_ids = [read_ids[i] for i in idx_list]
                 n = MAX_READS
 
         res = {"seq": seq.float(), "stat": stat, "signal": signal}
+
+        if read_labels is not None:
+            res["read_label"] = read_labels
+        if read_ids is not None:
+            res["read_id"] = read_ids
 
         if self.split != "infer":
             res["ratio"] = torch.tensor([float(row["ratio"])], dtype=torch.float32)

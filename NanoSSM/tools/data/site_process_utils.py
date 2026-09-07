@@ -43,7 +43,155 @@ motif_dic = {
 # -------------------------------------
 # index
 # -------------------------------------
-def parallel_index(eventalign_filepath: str, chunk_size: int, out_dir: str, n_processes: int):
+def parallel_index(eventalign_filepath: str, chunk_size: int,
+                   out_dir: str, n_processes: int):
+    """
+    Build eventalign.index using exact byte offsets.
+
+    Important
+    ---------
+    A single (transcript_id, read_index) may appear in multiple non-contiguous
+    blocks in an f5c eventalign file. Therefore this index stores ONE ROW PER
+    CONTIGUOUS BLOCK, not necessarily one row per read.
+
+    The downstream parallel_preprocess_tx() groups all blocks belonging to the
+    same read, concatenates them, and calls combine() once for that read.
+
+    The output schema is kept unchanged for compatibility:
+        transcript_id,read_index,pos_start,pos_end
+
+    ``chunk_size`` and ``n_processes`` are retained only for compatibility with
+    the existing prepare.py interface.
+    """
+
+    out_path = os.path.join(out_dir, 'eventalign.index')
+
+    common_log(
+        f"[INDEX] Indexing eventalign.txt file: {eventalign_filepath}"
+    )
+
+    n_blocks = 0
+    block_counts = defaultdict(int)
+
+    # Binary mode guarantees exact byte offsets.
+    with open(eventalign_filepath, 'rb') as eventalign_file, \
+            open(out_path, 'w', encoding='utf-8', newline='') as f_index:
+
+        header = eventalign_file.readline()
+
+        if not header:
+            raise ValueError(
+                f"Empty eventalign file: {eventalign_filepath}"
+            )
+
+        columns = [
+            x.decode('utf-8')
+            for x in header.rstrip(b'\r\n').split(b'\t')
+        ]
+
+        if 'contig' not in columns:
+            raise ValueError(
+                "eventalign file does not contain a 'contig' column"
+            )
+
+        if 'read_name' in columns:
+            read_col_name = 'read_name'
+        elif 'read_index' in columns:
+            read_col_name = 'read_index'
+        else:
+            raise ValueError(
+                "eventalign file does not contain "
+                "'read_name' or 'read_index'"
+            )
+
+        contig_col = columns.index('contig')
+        read_col = columns.index(read_col_name)
+
+        writer = csv.writer(f_index)
+        writer.writerow([
+            'transcript_id',
+            'read_index',
+            'pos_start',
+            'pos_end'
+        ])
+
+        current_key = None
+        current_start = None
+        current_end = None
+
+        while True:
+            line_start = eventalign_file.tell()
+            line = eventalign_file.readline()
+
+            if not line:
+                break
+
+            line_end = eventalign_file.tell()
+
+            fields = line.rstrip(b'\r\n').split(b'\t')
+
+            if len(fields) <= max(contig_col, read_col):
+                raise ValueError(
+                    f"Malformed eventalign line at byte {line_start}: "
+                    f"only {len(fields)} columns"
+                )
+
+            transcript_id = fields[contig_col].decode('utf-8')
+            read_index = fields[read_col].decode('utf-8')
+            current_line_key = (transcript_id, read_index)
+
+            if current_key is None:
+                current_key = current_line_key
+                current_start = line_start
+                current_end = line_end
+                continue
+
+            # Continue extending the same contiguous block.
+            if current_line_key == current_key:
+                current_end = line_end
+                continue
+
+            # The read changed: write the exact block that just ended.
+            writer.writerow([
+                current_key[0],
+                current_key[1],
+                current_start,
+                current_end
+            ])
+            block_counts[current_key] += 1
+            n_blocks += 1
+
+            current_key = current_line_key
+            current_start = line_start
+            current_end = line_end
+
+        # Write the final block.
+        if current_key is not None:
+            writer.writerow([
+                current_key[0],
+                current_key[1],
+                current_start,
+                current_end
+            ])
+            block_counts[current_key] += 1
+            n_blocks += 1
+
+    n_unique_reads = len(block_counts)
+    n_multiblock_reads = sum(
+        1 for n in block_counts.values() if n > 1
+    )
+    max_blocks = max(block_counts.values()) if block_counts else 0
+
+    common_log(
+        f"[INDEX] Indexed {n_blocks} contiguous blocks for "
+        f"{n_unique_reads} unique transcript/read pairs."
+    )
+    common_log(
+        f"[INDEX] Reads spanning multiple blocks: "
+        f"{n_multiblock_reads}; max blocks/read: {max_blocks}."
+    )
+
+def parallel_index_old(eventalign_filepath: str, chunk_size: int, out_dir: str, n_processes: int):
 
     # Create output paths and locks.
     out_paths, locks = dict(), dict()
@@ -333,11 +481,10 @@ def parallel_preprocess_tx(eventalign_filepath: str, out_dir: str, n_processes: 
         locks[out_filetype] = multiprocessing.Lock()
 
     # Writing the starting of the files.
-
     open(out_paths['json'], 'w', encoding='utf-8').close()
 
     with open(out_paths['info'], 'w', encoding='utf-8') as f:
-        f.write('transcript_id,transcript_position,motif,start,end,n_reads\n')  # header
+        f.write('transcript_id,transcript_position,motif,start,end,n_reads\n')
 
     open(out_paths['log'], 'w', encoding='utf-8').close()
 
@@ -346,53 +493,152 @@ def parallel_preprocess_tx(eventalign_filepath: str, out_dir: str, n_processes: 
     task_queue = multiprocessing.JoinableQueue(maxsize=n_processes * 2)
 
     # Create and start consumers.
-    consumers = [Consumer(task_queue=task_queue, task_function=preprocess_tx, locks=locks) for i in range(n_processes)]
+    consumers = [
+        Consumer(
+            task_queue=task_queue,
+            task_function=preprocess_tx,
+            locks=locks
+        )
+        for _ in range(n_processes)
+    ]
 
     for process in consumers:
         process.start()
-    df_eventalign_index = pd.read_csv(os.path.join(out_dir, 'eventalign.index'))
-    df_eventalign_index['transcript_id'] = df_eventalign_index['transcript_id']
+
+    df_eventalign_index = pd.read_csv(
+        os.path.join(out_dir, 'eventalign.index')
+    )
+
+    # Keep original file/block order; this matters when a read has several
+    # non-contiguous blocks.
     tx_ids = df_eventalign_index['transcript_id'].values.tolist()
     tx_ids = list(dict.fromkeys(tx_ids))
-    df_eventalign_index = df_eventalign_index.set_index('transcript_id')
-    total_count = len(df_eventalign_index)
-    total_tx = len(tx_ids)
-    common_log(f'Processing {total_tx} transcripts, total reads count: {total_count}...')
 
-    common_log(f'motif is {motif}, motif mask is {motif_dic[motif]}')
-    with open(eventalign_filepath, 'r', encoding='utf-8') as eventalign_result:
+    # Number of UNIQUE reads, not number of contiguous index blocks.
+    total_unique_reads = (
+        df_eventalign_index[['transcript_id', 'read_index']]
+        .drop_duplicates()
+        .shape[0]
+    )
+    total_blocks = len(df_eventalign_index)
+    total_tx = len(tx_ids)
+
+    common_log(
+        f'Processing {total_tx} transcripts, '
+        f'total unique reads count: {total_unique_reads}, '
+        f'total indexed blocks: {total_blocks}...'
+    )
+
+    common_log(
+        f'motif is {motif}, motif mask is {motif_dic[motif]}'
+    )
+
+    # The index contains byte offsets, so use binary mode here as well.
+    with open(eventalign_filepath, 'rb') as eventalign_result:
         tx_count = 0
+
         for tx_id in tx_ids:
             data_dict = dict()
             readcount = 0
             tx_count += 1
+
             if tx_count % 100 == 0:
                 percent = tx_count / total_tx * 100
-                common_log(f'Processing {tx_count}/{total_tx} transcripts... ({percent:.2f}%)')
+                common_log(
+                    f'Processing {tx_count}/{total_tx} transcripts... '
+                    f'({percent:.2f}%)'
+                )
 
-            for _, row in df_eventalign_index.loc[[tx_id]].iterrows():
-                read_index, pos_start, pos_end = row['read_index'], row['pos_start'], row['pos_end']
-                eventalign_result.seek(pos_start, 0)
-                chunk_size = pos_end - pos_start
-                events_str = eventalign_result.read(pos_end - pos_start)
+            # Preserve block order as written in eventalign.index.
+            tx_rows = df_eventalign_index[
+                df_eventalign_index['transcript_id'] == tx_id
+            ]
+
+            # A read may have one or several non-contiguous blocks.
+            # groupby(sort=False) preserves the order of first appearance,
+            # while rows inside each group remain in their original order.
+            for read_index, read_rows in tx_rows.groupby(
+                    'read_index', sort=False):
+
+                chunks = []
+                total_chunk_size = 0
+
                 try:
-                    data = combine(events_str, max_signal_len, seed)
+                    for _, row in read_rows.iterrows():
+                        pos_start = int(row['pos_start'])
+                        pos_end = int(row['pos_end'])
+
+                        if pos_end <= pos_start:
+                            raise ValueError(
+                                f"Invalid index interval: "
+                                f"pos_start={pos_start}, pos_end={pos_end}"
+                            )
+
+                        eventalign_result.seek(pos_start, 0)
+                        chunk_size = pos_end - pos_start
+                        chunk = eventalign_result.read(chunk_size)
+
+                        if len(chunk) != chunk_size:
+                            raise ValueError(
+                                f"Short read from eventalign file: "
+                                f"expected {chunk_size} bytes, got {len(chunk)}"
+                            )
+
+                        chunks.append(chunk)
+                        total_chunk_size += chunk_size
+
+                    # Concatenate all blocks belonging to the same read.
+                    # Each indexed block ends on a complete line boundary.
+                    events_str = b''.join(chunks).decode('utf-8')
+
+                    data = combine(
+                        events_str,
+                        max_signal_len,
+                        seed
+                    )
+
                 except Exception as e:
                     stack_trace = traceback.format_exc()
-                    common_log(f"combine failed: {e}, chunk_size: {chunk_size}, traceback: {stack_trace}", ERROR)
+                    common_log(
+                        f"combine failed: {e}, "
+                        f"transcript_id: {tx_id}, "
+                        f"read_index: {read_index}, "
+                        f"n_blocks: {len(read_rows)}, "
+                        f"total_chunk_size: {total_chunk_size}, "
+                        f"traceback: {stack_trace}",
+                        ERROR
+                    )
+
+                    # Never reuse data from a previous read.
+                    continue
+
                 if data.size > 1:
                     data_dict[read_index] = data
+
                 readcount += 1
-                if readcount > readcount_max:
+
+                if readcount >= readcount_max:
                     break
+
             if readcount >= readcount_min:
-                task_queue.put((tx_id, data_dict, n_neighbors, min_segment_count, out_paths, compress, motif))
+                task_queue.put(
+                    (
+                        tx_id,
+                        data_dict,
+                        n_neighbors,
+                        min_segment_count,
+                        out_paths,
+                        compress,
+                        motif
+                    )
+                )
 
     task_queue = end_queue(task_queue, n_processes)
-
     task_queue.join()
-    common_log(f'Finished processing {len(tx_ids)} transcripts.')
 
+    common_log(
+        f'Finished processing {len(tx_ids)} transcripts.'
+    )
 
 def preprocess_tx(tx_id: str, data_dict: Dict, n_neighbors: int, min_segment_count: int, out_paths: Dict,
                   compress: bool, motif: str, locks: Dict):
@@ -499,9 +745,8 @@ def preprocess_tx(tx_id: str, data_dict: Dict, n_neighbors: int, min_segment_cou
                 ujson.dump(dat, f)
                 f.write('}}\n')
                 pos_end = f.tell()
-                n_reads = 0
-                for kmer, features in dat.items():
-                    n_reads += len(features)
+                # Actual number of reads represented at this site.
+                n_reads = len(dat['read_id'])
                 g.write('%s,%d,%s,%d,%d,%d\n' % (tx_id, pos, motif[pos], pos_start, pos_end, n_reads))
 
     with locks['log'], open(out_paths['log'], 'a', encoding='utf-8') as f:
@@ -634,7 +879,6 @@ def load_bed_to_keys(bed_path: str, ratio_col: int = 8) -> dict:
             ratio = float(parts[ratio_col])
             bed_dict[(chrom, start)] = ratio
     return bed_dict
-
 
 
 

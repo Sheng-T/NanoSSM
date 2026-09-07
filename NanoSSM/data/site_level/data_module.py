@@ -24,6 +24,8 @@ class MultiDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.norm_path = norm_path
+        self.train_max_reads = train_max_reads
+        self.infer_max_reads = infer_max_reads
 
         print(
             f"[INFO] MultiDataModule init，loading {len(self.data_paths)} dataset path"
@@ -35,24 +37,76 @@ class MultiDataModule(pl.LightningDataModule):
         val_info_list = []
         val_json_list = []
 
-        suffix = "GNS_motif_1.0.info"
-        INFO_NAME = "train_" + suffix
-        VAL_NAME = "val_" + suffix
-        JSON_NAME = "data.json"
-
         for path in self.data_paths:
             path = path.strip()
-            t_info = os.path.join(path, INFO_NAME)
-            v_info = os.path.join(path, VAL_NAME)
-            j_file = os.path.join(path, JSON_NAME)
 
-            if os.path.exists(t_info) and os.path.exists(j_file):
-                train_info_list.append(t_info)
-                train_json_list.append(j_file)
+            new_train_info_labeled = os.path.join(
+                path, "train", "data.labeled.info"
+            )
+            new_train_info = os.path.join(
+                path, "train", "data.info"
+            )
+            new_train_json = os.path.join(
+                path, "train", "data.json"
+            )
 
-            if os.path.exists(v_info) and os.path.exists(j_file):
-                val_info_list.append(v_info)
-                val_json_list.append(j_file)
+            new_val_info_labeled = os.path.join(
+                path, "val", "data.labeled.info"
+            )
+            new_val_info = os.path.join(
+                path, "val", "data.info"
+            )
+            new_val_json = os.path.join(
+                path, "val", "data.json"
+            )
+
+            old_train_info = os.path.join(
+                path, "train_GNS_motif_1.0.info"
+            )
+            old_val_info = os.path.join(
+                path, "val_GNS_motif_1.0.info"
+            )
+            old_json = os.path.join(
+                path, "data.json"
+            )
+
+            # ---------- train ----------
+            if os.path.exists(new_train_json):
+                if os.path.exists(new_train_info_labeled):
+                    t_info = new_train_info_labeled
+                elif os.path.exists(new_train_info):
+                    t_info = new_train_info
+                else:
+                    t_info = None
+
+                if t_info is not None:
+                    train_info_list.append(t_info)
+                    train_json_list.append(new_train_json)
+                    print(f"[INFO] New-layout train: {t_info}")
+
+            elif os.path.exists(old_train_info) and os.path.exists(old_json):
+                train_info_list.append(old_train_info)
+                train_json_list.append(old_json)
+                print(f"[INFO] Legacy train: {old_train_info}")
+
+            # ---------- val ----------
+            if os.path.exists(new_val_json):
+                if os.path.exists(new_val_info_labeled):
+                    v_info = new_val_info_labeled
+                elif os.path.exists(new_val_info):
+                    v_info = new_val_info
+                else:
+                    v_info = None
+
+                if v_info is not None:
+                    val_info_list.append(v_info)
+                    val_json_list.append(new_val_json)
+                    print(f"[INFO] New-layout val: {v_info}")
+
+            elif os.path.exists(old_val_info) and os.path.exists(old_json):
+                val_info_list.append(old_val_info)
+                val_json_list.append(old_json)
+                print(f"[INFO] Legacy val: {old_val_info}")
 
         if train_info_list:
             self.train_ds = JsonIndexedDataset(
@@ -85,7 +139,7 @@ class MultiDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
-            prefetch_factor=4 if self.num_workers > 0 else 2,
+            prefetch_factor=4 if self.num_workers > 0 else None,
             collate_fn=safe_collate,
         )
 
@@ -101,6 +155,6 @@ class MultiDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
-            prefetch_factor=4 if self.num_workers > 0 else 2,
+            prefetch_factor=4 if self.num_workers > 0 else None,
             collate_fn=safe_collate,
         )
