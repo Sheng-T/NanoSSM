@@ -28,7 +28,7 @@ class MultiDataModule(pl.LightningDataModule):
         self.infer_max_reads = infer_max_reads
 
         print(
-            f"[INFO] MultiDataModule init，loading {len(self.data_paths)} dataset path"
+            f"[INFO] MultiDataModule init, loading {len(self.data_paths)} dataset path"
         )
 
     def setup(self, stage=None):

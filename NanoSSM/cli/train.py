@@ -71,7 +71,7 @@ def argparser():
 
     parser.add_argument("--type", default="site", help="read | site")
 
-    parser.add_argument("--learning_rate", "--lr", default=1e-3, type=float)
+    parser.add_argument("--learning_rate", "--lr", default=1e-4, type=float)
     parser.add_argument("--wd", default=0.00001, type=float)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--num_mamba_layers", default=2, type=int)
@@ -82,7 +82,7 @@ def argparser():
     parser.add_argument("--decoder_num_layers", default=1, type=int)
     parser.add_argument("--kmer", default=31, help="kmer", type=int)
     parser.add_argument(
-        "--signal_dim", default=20, help="max signal per base", type=int
+        "--signal_dim", default=15, help="max signal per base", type=int
     )
     parser.add_argument("--sequence_dim", default=4, help="seq feature num", type=int)
     parser.add_argument("--feature_dim", default=5, help="feature dim", type=int)

@@ -28,14 +28,12 @@ def argparser():
 
     parser.add_argument(
         "--eventalign",
-        help="eventalign filepath, the output from nanopolish.",
-        default="/homeb/hpc/users/nipeng/workspace/hek293t_rna004/SGNex_Hek293T_directRNA_replicate5_run1_dorado095_supv51_m6aDRACH.dorado_hg38g46.sort.eventalign.test_with_samples.tsv",
+        help="eventalign filepath, the output from nanopolish.", required=True
     )
 
     parser.add_argument(
         "--out_dir",
-        help="output directory.",
-        default="/homeb/hpc/users/shengtao/data/RNA004/Hek293T/test",
+        help="output directory.", required=True
     )
 
     parser.add_argument(
