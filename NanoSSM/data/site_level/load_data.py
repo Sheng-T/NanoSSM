@@ -114,11 +114,10 @@ def get_site_dataloader(
     num_workers: int,
     pin_memory: bool = True,
     norm_path: str = None,
-    max_reads: int=1024
 ) -> DataLoader:
     dataset = JsonIndexedDataset(
         info_path, json_paths=data_path, split="infer", norm_path=norm_path,
-        infer_max_reads=max_reads
+        use_max=False
     )
 
     dataloader = DataLoader(
@@ -128,7 +127,7 @@ def get_site_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else 2,
+        prefetch_factor=4 if num_workers > 0 else None,
         collate_fn=safe_collate
     )
 

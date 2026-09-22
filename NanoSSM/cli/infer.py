@@ -44,7 +44,6 @@ def argparser():
     parser.add_argument("--output_filename", default="infer_site_prob.bed")
     parser.add_argument("--overwrite", action="store_true", default=False)
     parser.add_argument("--norm_path", type=str, default=DEFAULT_NORM_PATH)
-    parser.add_argument("--max_reads", default=512, type=int)
     return parser
 
 
@@ -176,7 +175,6 @@ def main(args):
             args.batch_size,
             args.num_workers,
             norm_path=args.norm_path,
-            max_reads=args.max_reads,
         )
 
         with ExitStack() as manager:

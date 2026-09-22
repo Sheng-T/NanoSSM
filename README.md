@@ -1,12 +1,12 @@
 # NanoSSM
 
-NanoSSM is a deep learning framework for site-level N6-methyladenosine (m6A) stoichiometry estimation from Oxford Nanopore direct RNA sequencing (DRS) data, with a focus on the RNA004 chemistry. It introduces an interaction-aware aggregation module that explicitly models inter-read interactions at each transcriptomic site, enabling more robust stoichiometry quantification and confidence-based site ranking.
+NanoSSM is a deep learning framework for site-level N6-methyladenosine (m6A) stoichiometry estimation from Oxford Nanopore direct RNA sequencing (DRS) data, with a focus on the RNA004 chemistry. It introduces an interaction-aware aggregation module that explicitly models dependencies among reads covering the same transcriptomic site for robust site-level stoichiometry estimation.
 
-NanoSSM uses a Mamba2-based encoder for efficient read-level feature extraction and employs a cross-method consensus pseudo-labeling strategy to improve cross-cell-line generalization.
+NanoSSM uses a Mamba2-based encoder for read-level feature extraction and employs cross-method consensus pseudo-labeling to incorporate RNA004 datasets without matched quantitative references.
 
 ## Features
 
-- **Interaction-aware site aggregation**: explicitly models dependencies among reads at the same site, improving stoichiometry estimation, confidence-aware site prioritization, and suppression of false positive predictions
+- **Interaction-aware site aggregation**: explicitly models dependencies among reads covering the same site before gated aggregation for site-level stoichiometry estimation
 - **Mamba2-based read encoder**: selective state-space modeling for efficient integration of sequence and signal features from nanopore reads
 - **RNA004 chemistry**: designed and validated on Oxford Nanopore RNA004 direct RNA sequencing data
 
@@ -76,7 +76,7 @@ Raw nanopore reads (RNA004 DRS)
        ↓
   3. infer           — predict m6A stoichiometry
        ↓
-   BED output (bedMethyl format)
+   BED-like site-level output
 ```
 
 ---
@@ -108,12 +108,11 @@ python NanoSSM/cli/prepare.py \
     --eventalign      <output.eventalign.tsv> \
     --out_dir         <output_dir> \
     --n_processes     40 \
-    --max_signal_len  64 \
     --min_segment_count 20 \
     --n_neighbors     2
 ```
 
-`--max_signal_len` controls how many signal points are retained per base position (64 recommended for RNA004). `--min_segment_count` sets the minimum number of signal segments required to keep a read. `--n_neighbors` specifies how many flanking positions are included as context features around each candidate site. `--n_processes` sets the number of parallel worker processes.
+`--min_segment_count` sets the minimum number of signal segments required to keep a read. `--n_neighbors` specifies how many flanking positions are included as context features around each candidate site. `--n_processes` sets the number of parallel worker processes.
 
 ---
 
@@ -127,18 +126,22 @@ python NanoSSM/cli/infer.py \
     --norm_path  models/norm \
     --output_dir ./result \
     --device     0 \
-    --batch_size 32 \
+    --batch_size 16 \
     --num_workers 8 \
     --overwrite
 ```
 
-- For improved stability across different GPUs and datasets, consider using a smaller --batch_size if CUDA-related errors are encountered during inference.
+- NanoSSM uses all available reads passing the preprocessing filters for site-level inference.
 
-- Results are written to `result/infer_site_prob.bed` in bedMethyl-compatible format:
+- For high-coverage datasets or limited GPU memory, reduce `--batch_size` if necessary.
+
+- Results are written to `result/infer_site_prob.bed` in a BED-like site-level format:
 
 ```
 chrom  start  end  motif  score  strand  start  end  color  N_valid_cov  percent_modified
 ```
+
+The `percent_modified` field reports the predicted m6A stoichiometry as a fraction between 0 and 1.
 
 ---
 
@@ -151,7 +154,8 @@ python NanoSSM/cli/train.py \
     --type       site \
     --device     0 \
     --batch_size 200 \
-    --epochs     100
+    --epochs     200 \
+    --kmer       5
 ```
 
 `--norm_path` is optional. If not provided, normalization statistics will be computed from the training data and saved to the output directory.
@@ -169,4 +173,4 @@ python NanoSSM/cli/train.py \
 ## Citation
 
 If you use NanoSSM in your research, please cite:
-> [paper citation placeholder]
+> The citation will be updated upon publication.

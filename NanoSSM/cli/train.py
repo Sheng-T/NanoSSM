@@ -80,7 +80,7 @@ def argparser():
     parser.add_argument("--features", default=256, type=int)
     parser.add_argument("--encoder_num_layers", default=1, type=int)
     parser.add_argument("--decoder_num_layers", default=1, type=int)
-    parser.add_argument("--kmer", default=31, help="kmer", type=int)
+    parser.add_argument("--kmer", default=5, help="kmer", type=int)
     parser.add_argument(
         "--signal_dim", default=15, help="max signal per base", type=int
     )
